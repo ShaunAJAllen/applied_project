@@ -1,0 +1,961 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Collect Data
+```{r}
+# Load the library quantmod for financial time-series data collection
+library(quantmod)
+
+collect_data <- function(symbol, start_date, end_date) {
+  getSymbols(symbol, src = "yahoo", from = as.Date(start_date), to = as.Date(end_date))
+  
+  closing_prices <- Cl(GSPC)
+  
+  return(closing_prices)
+}
+# COVID-19 data
+closing_prices_19_23 <- collect_data("^GSPC", "2019-01-14", "2023-07-31")
+```
+
+```{r}
+closing_prices <- closing_prices_19_23
+
+# Plot the closing prices
+plot(closing_prices, main="S&P 500 Daily Closing Prices (2019-2021)", ylab="Price ($)")
+```
+
+```{r}
+
+directional_change_events <- function(prices, theta) {
+  n <- length(prices)
+  events <- rep("-", n)
+  current_direction <- NA
+  ext_price <- ext_idx <- NULL
+  ext_price_high <- ext_price_low <- as.numeric(prices[1]) # Initialize with the first price
+  ext_idx_high <- ext_idx_low <- 1
+
+  for (i in 2:n) {
+    # Get current price
+    current_price <- as.numeric(prices[i])
+
+    if (is.na(current_direction)) {
+      # Track the highest and lowest prices seen
+      if (current_price > ext_price_high) {
+        ext_price_high <- current_price
+        ext_idx_high <- i
+      }
+      if (current_price < ext_price_low) {
+        ext_price_low <- current_price
+        ext_idx_low <- i
+      }
+
+      # Check the magnitudes using both ext_prices and confirm the first DC event
+      magnitude_high <- abs((current_price - ext_price_high) / ext_price_high)
+      magnitude_low <- abs((current_price - ext_price_low) / ext_price_low)
+      if (magnitude_high >= theta || magnitude_low >= theta) {
+        if (magnitude_high > magnitude_low) { # Choosing the greater magnitude
+          events[ext_idx_high] <- "EXT"
+          current_direction <- "down"
+        } else {
+          events[ext_idx_low] <- "EXT"
+          current_direction <- "up"
+        }
+        events[i] <- "DCC"
+        ext_price <- current_price
+        ext_idx <- i
+        ext_price_high <- ext_price_low <- NULL
+      }
+    } else {
+      
+      # Calculate magnitude based on ext_price after the burn-in phase
+      magnitude <- if (!is.null(ext_price)) abs((current_price - ext_price) / ext_price) else NA
+
+      if (!is.null(ext_price) && magnitude >= theta) {
+        if ((current_direction == "up" && current_price < ext_price) || (current_direction == "down" && current_price > ext_price)) {
+          events[ext_idx] <- if (events[ext_idx] == "DCC") "DCC/EXT" else "EXT"
+          events[i] <- "DCC"
+          current_direction <- ifelse(current_direction == "down", "up", "down")
+          #ext_price <- ext_idx <- NULL
+          ext_price <- current_price # new
+          ext_idx <- i # new
+        }
+      }
+
+      if ((current_direction == "up" && current_price > ext_price) || (current_direction == "down" && current_price < ext_price)) {
+        ext_price <- current_price
+        ext_idx <- i
+      }
+    }
+    
+  }
+
+  result <- data.frame(
+    date = index(prices),
+    price = as.numeric(prices),
+    events = events
+  )
+
+  return(result)
+}
+
+```
+
+
+```{r}
+# Chen Ch 5 S&P 500 theta = 0.3%
+theta <- 0.3 * 0.01
+
+dc_events_summary <- directional_change_events(prices = closing_prices, theta)
+
+head(dc_events_summary)
+```
+
+Plotting a similar figure to Chen Figure 2.1 - Use a small period of time. 
+
+```{r}
+# Create data frame
+df <- data.frame(
+  Time = 1:11,
+  Price = c(97, 96, 98, 95, 100, 102, 104, 103, 105, 103, 99)
+)
+# Original annotations
+original_anno_data <- data.frame(
+  Time = c(4, 5, 9, 10, 11),
+  Price = c(95, 100, 105, 103, 99),
+  Labels = c('A', 'B', 'C', 'D', 'E')
+)
+
+# Additional annotations
+new_anno_data <- data.frame(
+  Time = c(4, 5, 9, 11),
+  Price = c(95, 100, 105, 99),
+  Labels = c('EXT', 'DCC', 'EXT', 'DCC')
+)
+
+# Create the plot with updates
+plot_updated <- ggplot(df, aes(x = Time, y = Price)) +
+  geom_line(color = "black") +
+  geom_point(data = original_anno_data, aes(x = Time, y = Price), color = "black", size = 3) +
+  geom_text(data = original_anno_data, aes(x = Time, y = Price, label = Labels), vjust = -1, color = "black") +
+
+  # Additional annotations
+  geom_text(data = new_anno_data, aes(x = Time, y = Price, label = Labels), vjust = 2, color = "black") +
+
+  # Existing Horizontal blue and red lines
+  geom_segment(aes(x = 4, xend = 5, y = df$Price[4], yend = df$Price[4]), linetype = "dotted", color = "blue") +
+  geom_segment(data = df[4:5, ], aes(x = Time, xend = Time, yend = Price), y = df$Price[4], linetype = "dotted", color = "blue") +
+  geom_segment(aes(x = 9, xend = 11, y = df$Price[9], yend = df$Price[9]), linetype = "dotted", color = "red") +
+  geom_segment(aes(x = 11, xend = 11, y = df$Price[9], yend = df$Price[11]), linetype = "dotted", color = "red") +
+
+  # New horizontal lines with annotations
+  geom_segment(aes(x = 4, xend = 5, y = 106.25, yend = 106.25), 
+               color = "lightblue", 
+               arrow = arrow(type = "closed", ends = "both", length = unit(0.1, "inches"))) +
+  geom_segment(aes(x = 5, xend = 9, y = 106.25, yend = 106.25), 
+               color = "lightgreen",
+               arrow = arrow(type = "closed", ends = "both", length = unit(0.1, "inches"))) +
+  geom_segment(aes(x = 9, xend = 11, y = 106.25, yend = 106.25), 
+               color = "lightblue",
+               arrow = arrow(type = "closed", ends = "both", length = unit(0.1, "inches"))) +
+  annotate("text", x = 4.5, y = 106, label = "DC Event", vjust = -1, 
+           color = "lightblue") +
+  annotate("text", x = 7, y = 106, label = "OS Event", vjust = -1, 
+           color = "lightgreen") +
+  annotate("text", x = 10, y = 106, label = "DC Event", vjust = -1, 
+           color = "lightblue") +
+
+  # Thetas and other configurations
+  annotate("text", x = 11.2, y = df$Price[10] + 0.5, label = "θ", color = "red", size = 4) +
+  annotate("text", x = 5.2, y = 97, label = "θ", color = "blue", size = 4) +
+  scale_x_continuous(breaks = 1:11) +
+  ylim(min(df$Price) - 2, max(df$Price) + 2) +
+  labs(title = "", x = "Time", y = "Price ($)") +
+  theme_minimal() + 
+  theme(panel.border = element_rect(color = "black", fill = NA, size = 0.8)) +
+  theme(axis.ticks = element_line(color = "black", size = 0.5))
+
+# Display the updated plot
+print(plot_updated)
+
+```
+
+```{r}
+ggsave(filename = "dcevent.png", plot = plot_updated, width = 6, height = 4, dpi = 300)
+```
+
+DC ONGOING trend plot
+```{r}
+# Create data frame
+df <- data.frame(
+  Time = 1:11,
+  Price = c(97, 96, 98, 95, 100, 102, 104, 103, 105, 103, 99)
+)
+# Original annotations
+original_anno_data <- data.frame(
+  Time = c(4, 5, 9, 10, 11),
+  Price = c(95, 100, 105, 103, 99),
+  Labels = c('A', 'B', 'C', 'D', 'E')
+)
+
+# Additional annotations
+new_anno_data <- data.frame(
+  Time = c(4, 5, 9, 11),
+  Price = c(95, 100, 105, 99),
+  Labels = c('EXT', 'DCC', 'EXT', 'DCC')
+)
+
+# Create the plot
+plot <- ggplot(df, aes(x = Time, y = Price)) +
+  geom_line(color = "black") +
+  geom_point(data = original_anno_data, aes(x = Time, y = Price), color = "black", size = 3) +
+  geom_text(data = original_anno_data, aes(x = Time, y = Price, label = Labels), vjust = -1, color = "black") +
+
+  # Additional annotations
+  geom_text(data = new_anno_data, aes(x = Time, y = Price, label = Labels), vjust = 2, color = "black") +
+
+  # Horizontal blue line from point A to t=10
+  geom_segment(aes(x = 4, xend = 10, y = df$Price[4], yend = df$Price[4]), linetype = "dotted", color = "blue") +
+  
+  # Vertical blue lines
+  geom_segment(data = df[4:10, ], aes(x = Time, xend = Time, yend = Price), y = df$Price[4], 
+               linetype = "dotted", color = "blue") +
+
+  # Annotate "T" in blue
+  annotate("text", x = 7, y = 94, label = "T", color = "blue") +
+
+  # Annotate "TMV" on the side of one of the vertical blue lines
+  annotate("text", x = 9.5, y = 98, label = "TMV", color = "blue") +
+
+  # Horizontal red line from point C to above point E
+  geom_segment(aes(x = 9, xend = 11, y = df$Price[9], yend = df$Price[9]), linetype = "dotted", color = "red") +
+  
+  # Vertical red line connecting to point E
+  geom_segment(aes(x = 11, xend = 11, y = df$Price[9], yend = df$Price[11]), linetype = "dotted", color = "red") +
+
+  # Annotate red theta beside the red vertical line
+  annotate("text", x = 11.2, y = df$Price[10] + 0.5, label = "θ", color = "red", size = 4) +
+
+  # Annotate blue theta beside the blue vertical line connecting to point B
+  annotate("text", x = 5.2, y = 97, label = "θ", color = "blue", size = 4) +
+
+  # Display every time point on the x-axis
+  scale_x_continuous(breaks = 1:11) +
+  
+  # Increase y-axis limits
+  ylim(min(df$Price) - 2, max(df$Price) + 2) +
+  
+  labs(title = "", x = "Time", y = "Price ($)") +
+  theme_minimal() + 
+  theme(panel.border = element_rect(color = "black", fill = NA, size = 0.8)) +
+  theme(axis.ticks = element_line(color = "black", size = 0.5))
+
+# Display the plot
+print(plot)
+
+
+```
+Save tracking TMV and T plot
+```{r}
+ggsave(filename = "ongoingTMV&Tplot.png", plot = plot, width = 6, height = 3, dpi = 300)
+```
+
+First, set up the DC event pairs - EXT(n) and DCC(n). 
+```{r}
+create_pairs <- function(dc_events_summary) {
+  num_rows <- sum(dc_events_summary$events == "EXT") + sum(dc_events_summary$events == "DCC/EXT")
+  pairs <- data.frame(date = as.Date(character(num_rows)), EXT = numeric(num_rows), DCC = numeric(num_rows))
+  row_idx <- 1
+
+  for (i in 1:nrow(dc_events_summary)) {
+    event <- dc_events_summary$events[i]
+    price <- dc_events_summary$price[i]
+    date <- dc_events_summary$date[i]
+
+    if (event == "EXT") {
+      pairs[row_idx, "date"] <- date
+      pairs[row_idx, "EXT"] <- price
+    }
+
+    if (event == "DCC") {
+      pairs[row_idx, "DCC"] <- price
+      row_idx <- row_idx + 1
+    }
+    
+    if (event == "DCC/EXT") {
+      pairs[row_idx, "DCC"] <- price
+      pairs[row_idx + 1, "date"] <- date
+      pairs[row_idx + 1, "EXT"] <- price
+      row_idx <- row_idx + 1
+    }
+  }
+  
+  return(pairs)
+}
+
+# Creating the dc pairs data-frame
+dc_pairs <- create_pairs(dc_events_summary)
+print(dc_pairs)
+
+
+```
+
+Second, calculate DC indicators TMV and T.
+
+Fix bizdays code tomorrow.
+```{r}
+if (!require("bizdays")) {
+  install.packages("bizdays")
+  library("bizdays")
+}
+
+# Define weekends
+create.calendar(name="MyCalendar", weekdays=c("saturday", "sunday"))
+
+
+# Create a function to calculate business days between successive dates
+business_days_diff <- function(i) {
+  if (i == 1) return(NA) # First row, no previous date to compare with
+  bizdays(dc_pairs$date[i - 1], dc_pairs$date[i], "MyCalendar")
+}
+```
+
+
+```{r}
+dc_pairs <- dc_pairs %>%
+  # TMV := total price movement of a DC event and an OS event
+  mutate(TMV = abs((EXT - lag(EXT)) / (lag(EXT) * theta))) %>%
+  
+  # t := time for completion of trend
+  mutate(t = as.numeric(difftime(date, lag(date), units = "days"))) %>%
+  
+  # tbiz := time for completion of trend (in business days)
+  mutate(t_biz = sapply(1:n(), business_days_diff)) %>%
+
+  # R := time-adjusted return of DC 
+  mutate(R = theta * TMV / t) %>%
+  
+  # LR := the log transformation of the DC indicator
+  mutate(LR = log(R))
+
+dc_pairs
+```
+
+1. Fitting a hidden Markov model to our input data.
+```{r, message=FALSE}
+
+# Install and load the necessary package
+if (!require("depmixS4")) {
+  install.packages("depmixS4")
+}
+
+library(depmixS4)
+
+# Prepare the data (depmixS4 requires data to be in data.frame format)
+# Skip the first NA row
+hmm_data <- data.frame(LR = dc_pairs[2:nrow(dc_pairs), 'LR'])
+
+# Set seed
+set.seed(48151623)
+
+# Fit the model
+hmm <- depmix(LR ~ 1, data = hmm_data, nstates = 2, family = gaussian())
+fit <- fit(hmm)
+
+# Print the fitted model
+summary(fit)
+```
+
+```{r}
+# Determine most likely state sequence
+state_sequence <- viterbi(fit)
+
+head(state_sequence)
+
+# Combine closing_prices and state_sequence in a data frame
+data_combined <- data.frame(date = dc_pairs$date[2:nrow(dc_pairs)],
+                            LR = dc_pairs$LR[2:nrow(dc_pairs)], 
+                            state = state_sequence$state)
+
+head(data_combined)
+
+# Subset the data based on state_sequence
+data_state1 <- data_combined$LR[data_combined$state == 1]
+data_state2 <- data_combined$LR[data_combined$state == 2]
+
+# Now, data_state1 and data_state2 only contain closing prices corresponding to each state,
+# without any NA values
+
+# Calculate standard deviation for each state
+sd_state1 <- sd(data_state1)
+sd_state2 <- sd(data_state2)
+
+# Print the standard deviations
+print(paste0("Standard deviation for state 1: ", sd_state1))
+print(paste0("Standard deviation for state 2: ", sd_state2))
+
+# Switch states if needed
+if (sd_state1 > sd_state2) {
+  data_combined$state <- ifelse(data_combined$state == 1, 2, 1)
+}
+
+head(data_combined)
+
+```
+```{r}
+data_combined
+```
+
+Next, we will produce Figure 5.5 which plots the detected regimes of the index. 
+Then, we will summarise the time-series data using DC indicators, and then re-train the HMM.
+
+```{r, warning=FALSE}
+# Install ggplot2 if it's not already installed
+if (!require("ggplot2")) {
+  install.packages("ggplot2")
+}
+
+# Load the ggplot2 package
+library(ggplot2)
+
+# Install dplyr if it's not already installed
+if (!require("dplyr")) {
+  install.packages("dplyr")
+}
+
+# Load the dplyr package
+library(dplyr)
+
+p <- ggplot(data_combined, aes(x = date)) +
+  geom_rect(aes(ymin = -8, ymax = 0,
+                xmin = date, xmax = lead(date), fill = as.factor(state)),
+            show.legend = T, alpha = 0.2) +
+  geom_line(aes(y = data_combined$LR, colour = "Price")) +
+
+  scale_fill_manual(name = "Regime", 
+                    values = c("blue", "red"),
+                    labels = c("State 1", "State 2")) +
+  scale_colour_manual(name = "", values = c("black")) +
+  
+  scale_x_date(date_breaks = "1 year", date_labels = "%m/%y") +
+
+  labs(x = "Date", y = "Log R",
+       title = "") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5)) # Centering the title
+
+
+# Print the plot
+print(p)
+```
+```{r}
+ggsave(filename = "hindsight_regimesPlot.png", plot = p, width = 6, height = 3, dpi = 300)
+```
+
+Formatting data in data_combined for table use
+```{r}
+data_combined2 <- data_combined
+data_combined2$date <- format(data_combined2$date, "%d/%m/%Y")
+```
+
+Creating table to display regime periods
+```{r}
+create_regime_periods <- function(data_combined) {
+  regimes <- data.frame(regime_1 = character(), regime_2 = character(), stringsAsFactors = FALSE)
+  current_state <- data_combined$state[1]
+  start_date <- data_combined$date[1]
+  
+  i <- 1
+
+  # Special case when starting with regime 2
+  if (current_state == 2) {
+    regimes[nrow(regimes) + 1, "regime_1"] <- 'N/A'
+    regimes[nrow(regimes), "regime_2"] <- paste(start_date, "to", data_combined$date[i])
+    start_date <- data_combined$date[i + 1]
+    current_state <- data_combined$state[i + 1]
+    i <- i + 2
+  }
+  
+  # Iterate through the data frame, checking for state changes
+  while (i <= nrow(data_combined)) {
+    if (current_state == 1) {
+      while (i <= nrow(data_combined) && data_combined$state[i] == 1) {
+        i <- i + 1
+      }
+      regimes[nrow(regimes) + 1, "regime_1"] <- paste(start_date, "to", data_combined$date[i - 1])
+      start_date <- data_combined$date[i]
+      current_state <- 2
+    } else {
+      while (i <= nrow(data_combined) && data_combined$state[i] == 2) {
+        i <- i + 1
+      }
+      regimes[nrow(regimes), "regime_2"] <- paste(start_date, "to", data_combined$date[i - 1])
+      start_date <- data_combined$date[i]
+      current_state <- 1
+    }
+  }
+  
+  return(regimes)
+}
+
+# Create regime periods data frame
+regime_periods <- create_regime_periods(data_combined2)
+print(regime_periods)
+```
+Filling in gaps between regime periods
+```{r}
+# Parse dates
+regime_periods2 <- regime_periods
+
+regime_periods2$regime_1 <- strsplit(regime_periods2$regime_1, " to ")
+regime_periods2$regime_2 <- strsplit(regime_periods2$regime_2, " to ")
+
+# Convert to date
+regime_periods2$regime_1 <- lapply(regime_periods2$regime_1, function(x) as.Date(x, format = "%d/%m/%Y"))
+regime_periods2$regime_2 <- lapply(regime_periods2$regime_2, function(x) as.Date(x, format = "%d/%m/%Y"))
+
+no_periods <- sum(!is.na(regime_periods$regime_1)) + sum(!is.na(regime_periods$regime_2))
+
+for (i in 2:(no_periods)) {
+  # when i even: compare regime 2 period start to previous regime 1 period end
+  # and change regime 2 period start to fill in the gap 
+  if (i %% 2 == 0) {
+    regime_1_end <- regime_periods2$regime_1[[floor(i / 2)]][2]
+    regime_2_start <- regime_periods2$regime_2[[floor(i / 2)]][1]
+    
+    if (as.numeric(difftime(regime_2_start, regime_1_end, units = "days")) != 1) {
+      fixed_regime_2_start <- regime_1_end + 1
+      regime_periods2$regime_2[[floor(i / 2)]][1] <- fixed_regime_2_start
+    }
+  } else {
+    # when i odd: compare regime period 1 start to previous regime 2 period end
+    regime_2_end <- regime_periods2$regime_2[[floor((i - 1) / 2)]][2] # i = 3 => i - 1 / 2 = 1, i = 5 => i - 1 / 2 = 2
+    regime_1_start <- regime_periods2$regime_1[[floor((i + 1) / 2)]][1] # i = 3 => i + 1 / 2 = 2, i = 5 => i + 1 / 2 = 3
+    
+    if (as.numeric(difftime(regime_1_start, regime_2_end, units = "days")) != 1) {
+      fixed_regime_1_start <- regime_2_end + 1
+      regime_periods2$regime_1[[floor((i + 1) / 2)]][1] <- fixed_regime_1_start
+    }
+  }
+}
+```
+
+Fixing regime_periods display of regime periods for the table in the report
+Note - regime_periods2 contains the data for the periods in usable format rather than display format
+```{r}
+# Convert dates back to strings in the "DD/MM/YYYY" format
+regime_periods$regime_1 <- lapply(regime_periods2$regime_1, function(x) format(x, "%d/%m/%Y"))
+regime_periods$regime_2 <- lapply(regime_periods2$regime_2, function(x) format(x, "%d/%m/%Y"))
+
+# Concatenate start and end dates into a single string separated by " to "
+regime_periods$regime_1 <- sapply(regime_periods2$regime_1, function(x) paste(x[1], "to", x[2]))
+regime_periods$regime_2 <- sapply(regime_periods2$regime_2, function(x) paste(x[1], "to", x[2]))
+
+# Now regime_periods has been corrected for the missing dates in between detected regime periods
+```
+
+Produce LaTeX code for creating table of regime periods.
+```{r}
+if (!require("xtable")) {
+  install.packages("xtable")
+}
+library(xtable)
+regime_table <- xtable(regime_periods)
+print(regime_table, type = "latex")
+```
+In the training data sets, the raw financial data is summarised into completed DC trends, under a threshold of 0.3%. The DC trends are then measured by two DC indicators: TMVEXT and TEXT.
+
+```{r}
+# Merging DC event data and HMM data (LR, state sequence)
+merged_df <- merge(dc_pairs, data_combined, by = c("date", "LR"))
+print(merged_df)
+
+# arbitrary date chosen
+DATE_SPLIT <- "2021-04-30"
+train <- merged_df[merged_df$date <= DATE_SPLIT, ]
+test <- merged_df[merged_df$date > DATE_SPLIT, ]
+```
+
+On the other hand, in the test data sets, the raw financial data was summarised into the on-going DC trends, which were then measured by two DC indicators TMV and T.
+
+1. Filter result from directional_change_events function for test set dates
+2. New function to track last known EXT price
+3. New function to extract on-going pairs of EXT prices
+4. Calculate TMV and T for on-going pairs of EXT prices
+
+```{r}
+test_dc_events_summary <- dc_events_summary[dc_events_summary$date >= (as.Date(DATE_SPLIT) + 1) & dc_events_summary$date <= index(tail(closing_prices, 1)), ]
+rownames(test_dc_events_summary) <- 1:nrow(test_dc_events_summary)
+```
+
+Track last confirmed EXT price
+```{r}
+track_lastEXT <- function(test_dc_events_summary) {
+  
+  test_dc_events_summary$lastEXT <- NA
+  test_dc_events_summary$lastEXTidx <- NA # new
+
+  confirmDCC <- FALSE
+  burnedin <- FALSE
+  
+  for (i in 1:nrow(test_dc_events_summary)) {
+    
+    if (!burnedin & test_dc_events_summary$events[i] == "EXT") {
+      # not burned in and see first EXT => burned in
+      burnedin <- TRUE
+    }
+    if (!burnedin) {
+      next
+    }
+    
+    # if see EXT => record price
+    if (test_dc_events_summary$events[i] == "EXT") {
+      lastEXTprice <- test_dc_events_summary$price[i]
+      lastEXTidx <- i # new
+    }
+    
+    # if see DCC => confirm last EXT price seen
+    if (test_dc_events_summary$events[i] == "DCC") {
+      confirmDCC <- TRUE
+      newLastEXTprice <- lastEXTprice
+      newLastEXTidx <- lastEXTidx # new
+    }
+    
+    # if see DCC/EXT => see DCC and see EXT => confirm EXT price seen
+    if (test_dc_events_summary$events[i] == "DCC/EXT") {
+      confirmDCC <- TRUE
+      # confirm last EXT price seen
+      newLastEXTprice <- lastEXTprice
+      newLastEXTidx <- lastEXTidx # new
+      # record new EXT price
+      lastEXTprice <- test_dc_events_summary$price[i]
+      lastEXTidx <- i # new
+    }
+    
+    # if DCC confirmed => record confirmed EXT
+    if (confirmDCC) {
+      test_dc_events_summary$lastEXT[i] <- newLastEXTprice
+      
+      test_dc_events_summary$lastEXTidx[i] <- newLastEXTidx # new
+    }
+    
+  }
+  
+  return(test_dc_events_summary)
+}
+
+test_tracked_EXT <- track_lastEXT(test_dc_events_summary)
+test_tracked_EXT$lastEXTdate <- test_tracked_EXT$date[test_tracked_EXT$lastEXTidx] # new
+test_tracked_EXT
+```
+
+Calculate on-going TMV and T in test set
+```{r}
+test_tracked_TMV_T <- test_tracked_EXT %>%
+  
+  # calculate the value of tracked TMV in the on-going trend
+  mutate(TMV = abs((price - lastEXT) / (lastEXT * theta))) %>%
+  # calculate the value of tracked T in the on-going trend
+  mutate(t = as.numeric(difftime(date, lastEXTdate, units = "days"))) %>%
+  # calculate the value of tracked tbiz := time for on-going trend (in business days)
+  
+  # R := time-adjusted return of on-going DC 
+  mutate(R = theta * TMV / t) %>%
+  
+  # LR := the log transformation of the DC indicator
+  mutate(LR = log(R))
+
+test_tracked_TMV_T
+```
+
+```{r}
+# normalising train and test using min-max normalisation
+min_max_normalisation <- function(df, column_name) {
+  # Extract the column
+  column <- df[[column_name]]
+
+  # Compute min and max of the column
+  min_value <- min(column, na.rm = TRUE)
+  max_value <- max(column, na.rm = TRUE)
+
+  # Perform min-max normalization
+  normalised_column <- (column - min_value) / (max_value - min_value)
+
+  # Add the normalized column to the data frame
+  normalised_column_name <- paste(column_name, "normalised", sep = "_")
+  df[[normalised_column_name]] <- normalised_column
+
+  return(df)
+}
+```
+
+Normalising the data
+```{r}
+# Normalising train data
+
+# Normalize column 'TMV'
+train_norm_TMV <- min_max_normalisation(train, 'TMV')
+
+# Normalize column 't'
+train_norm <- min_max_normalisation(train_norm_TMV, 't')
+
+# Print the result
+print(train_norm)
+
+
+# Normalising test data
+
+# Normalize column 'TMV'
+test_norm_TMV <- min_max_normalisation(test_tracked_TMV_T, 'TMV')
+
+# Normalize column 't'
+test_norm <- min_max_normalisation(test_norm_TMV, 't')
+
+# Print the result
+print(test_norm)
+```
+
+In the empirical study, the parameters of the NBC are learnt from the training data sets. And the model is used to recognise market regimes for each pair of input features from the test data sets.
+
+```{r}
+# Subset relevant variables for NBC training
+train_chen <- train_norm[, c('date', 'TMV_normalised', 't_normalised', 'state')]
+
+test_chen <- test_norm[, c('date', 'TMV_normalised', 't_normalised')]
+
+# LR and NORMALISING 
+
+train_norm_LR <- min_max_normalisation(train, 'LR')
+test_norm_LR <- min_max_normalisation(test_tracked_TMV_T, 'LR')
+
+train_LR <- train_norm_LR[, c('date', 'LR_normalised', 'state')]
+
+test_LR <- test_norm_LR[, c('date', 'LR_normalised')]
+
+# CHOOSE DATA HERE
+train_final <- train_chen
+test_final <- test_chen
+```
+
+Need to take the state sequence from test (i.e. the state sequence over DC events found in hindsight by the HMM) and expand it over the whole period in test_final
+Find final date in final regime period
+```{r}
+end_regime_date <- NA
+
+if (is.na(regime_periods2[nrow(regime_periods2), 2][[1]])) {
+  # if end in regime 1: get last date in final regime 1 detected
+  end_regime_date <- regime_periods2[nrow(regime_periods2), 1][[1]][2]
+} else {
+  # else we end in regime 2: get last date in final regime 2 detected
+  end_regime_date <- regime_periods2[nrow(regime_periods2), 2][[1]][2]
+}
+
+end_regime_date_idx <- as.numeric(rownames(test_final[test_final$date == end_regime_date, ]))
+```
+
+Adding state sequence to the whole period of dates in test set (i.e. expanding DC event state sequence)
+
+```{r}
+regime_periods2
+```
+
+```{r}
+# Convert date column in test_final
+test_final$date <- as.Date(test_final$date, format = "%d/%m/%Y") # changes date format
+
+# Initialize state column
+test_final$state <- NA
+
+# For each row in test_final until the end regime last date, check if date falls within any regime period
+for (i in 1:end_regime_date_idx) {
+  for (j in 1:nrow(regime_periods2)) {
+    # if date between regime 1 start and end dates
+    if (test_final$date[i] >= regime_periods2$regime_1[[j]][1] & test_final$date[i] <= regime_periods2$regime_1[[j]][2]) {
+      test_final$state[i] <- 1
+      break
+      # else if date between regime 2 start and end dates
+    } else if (test_final$date[i] >= regime_periods2$regime_2[[j]][1] & test_final$date[i] <= regime_periods2$regime_2[[j]][2]) {
+      test_final$state[i] <- 2
+      break
+    }
+  }
+}
+```
+
+```{r}
+regime_periods
+```
+
+Algorithm 1 Naive Bayes Classifier
+
+```{r}
+# Naive Bayes Classifier
+
+# Training Phase
+train_NBC <- function(data) {
+  # 1. Calculate the prior probability of each class
+  priors <- table(data$state) / nrow(data)
+
+  # 2. Calculate the mean and the standard deviation of the input features for each class
+  summary_stats <- data %>%
+    group_by(state) %>%
+    summarise(mu_TMV = mean(TMV_normalised),
+              sd_TMV = sd(TMV_normalised),
+              mu_t = mean(t_normalised),
+              sd_t = sd(t_normalised))
+
+  # Return the model parameters
+  list(priors = priors, summary_stats = summary_stats)
+}
+
+# Testing Phase
+predict_class <- function(test_data, model) {
+  # Apply the Gaussian distribution parameters to calculate the likelihood for each observation in the test data
+  predicted_probs <- lapply(1:nrow(test_data), function(i) {
+    # Get the TMV and t values for the current observation
+    TMV <- test_data$TMV_normalised[i]
+    t <- test_data$t_normalised[i]
+    
+    # If either TMV or t is NA, assign NA as the predicted class
+    if (is.na(TMV) || is.na(t)) {
+      return(list(p_x_given_Ck1 = NA, p_x_given_Ck2 = NA, posterior_k1 = NA, posterior_k2 = NA, pred_class = NA))
+    }
+
+    # For each class, calculate the probability p(x|Ck)
+    likelihoods <- lapply(1:2, function(class) {
+      mu_TMV <- model$summary_stats[model$summary_stats$state == class, ]$mu_TMV
+      sd_TMV <- model$summary_stats[model$summary_stats$state == class, ]$sd_TMV
+      mu_t <- model$summary_stats[model$summary_stats$state == class, ]$mu_t
+      sd_t <- model$summary_stats[model$summary_stats$state == class, ]$sd_t
+
+      p_TMV_given_class <- dnorm(TMV, mean = mu_TMV, sd = sd_TMV)
+      p_t_given_class <- dnorm(t, mean = mu_t, sd = sd_t)
+
+      # Use the Naive Bayes assumption to calculate the joint probability
+      joint_probability <- p_TMV_given_class * p_t_given_class
+
+      # Multiply by the prior probability of the class
+      posterior_k <- joint_probability * model$priors[class]
+      
+      return(list(p_x_given_Ck = joint_probability, posterior_k = posterior_k))
+    })
+
+    # Compute total probability p(x)
+    p_x = sum(sapply(likelihoods, function(x) x$posterior_k))
+  
+    # Compute posterior probability p(Ck|x)
+    post_probs = sapply(likelihoods, function(x) x$posterior_k / p_x)
+    
+    # Predicted class is the one with the maximum posterior probability
+    pred_class <- as.integer(which.max(post_probs))
+    
+    return(list(p_x_given_Ck1 = likelihoods[[1]]$p_x_given_Ck, 
+                p_x_given_Ck2 = likelihoods[[2]]$p_x_given_Ck, 
+                posterior_k1 = post_probs[1], 
+                posterior_k2 = post_probs[2],
+                pred_class = pred_class))
+  })
+
+  # Create a copy of test_data with additional columns
+  test_data$p_x_given_Ck1 <- sapply(predicted_probs, function(x) x$p_x_given_Ck1)
+  test_data$p_x_given_Ck2 <- sapply(predicted_probs, function(x) x$p_x_given_Ck2)
+  test_data$posterior_k1 <- sapply(predicted_probs, function(x) x$posterior_k1)
+  test_data$posterior_k2 <- sapply(predicted_probs, function(x) x$posterior_k2)
+  test_data$pred_state <- sapply(predicted_probs, function(x) x$pred_class)
+
+  return(test_data)
+}
+
+# Training the model
+model <- train_NBC(train_final)
+
+# Testing the model
+predictions <- predict_class(test_final, model)
+```
+
+```{r}
+predictions
+```
+Plot actual regimes detected by HMM
+```{r}
+predictions_plottable <- na.omit(predictions)
+# Ensure state is treated as numeric
+predictions_plottable$state <- as.numeric(as.character(predictions_plottable$state))
+predictions_plottable$pred_state <- as.numeric(as.character(predictions_plottable$pred_state))
+
+# Plotting
+sandp_actual_regime_plot <- ggplot(predictions_plottable, aes(x = date, y = state, group = 1)) +
+  geom_line(aes(group = 1)) + 
+  labs(title = "S&P 500: Actual Regime", 
+       x = "Date", 
+       y = "State") +
+  scale_x_date(labels = scales::date_format("%m/%Y"), date_breaks = "2 month") +
+  scale_y_continuous(limits = c(1, 2), breaks = c(1,2)) + # Setting strict y-axis limits and breaks
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), aspect.ratio = 0.2) + # Adjust the aspect ratio here
+  theme(plot.title = element_text(hjust = 0.5))
+print(sandp_actual_regime_plot)
+```
+```{r}
+ggsave(filename = "sandp_actual_regime_plot.png", plot = sandp_actual_regime_plot, width = 6, height = 2, dpi = 300)
+```
+
+```{r}
+# Plotting
+sandp_tracked_regime_plot <- ggplot(predictions_plottable, aes(x = date, y = pred_state, group = 1)) +
+  geom_line(aes(group = 1)) + 
+  labs(title = "S&P 500: Tracked Regime", 
+       x = "Date", 
+       y = "State") +
+  scale_x_date(labels = scales::date_format("%m/%Y"), date_breaks = "2 month") +
+  scale_y_continuous(limits = c(1, 2), breaks = c(1,2)) + # Setting strict y-axis limits and breaks
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), aspect.ratio = 0.2) + # Adjust the aspect ratio here
+  theme(plot.title = element_text(hjust = 0.5))
+print(sandp_tracked_regime_plot)
+ggsave(filename = "sandp_tracked_regime_plot.png", plot = sandp_tracked_regime_plot, width = 6, height = 2, dpi = 300)
+
+```
+
+```{r}
+predictions$state <- factor(predictions$state, levels=c(1, 2))
+predictions$pred_state <- factor(predictions$pred_state, levels=c(1, 2))
+```
+
+```{r}
+install.packages("caret")
+library(caret)
+
+# Create a confusion matrix
+cm <- confusionMatrix(predictions$pred_state, predictions$state)
+
+# Print confusion matrix
+print(cm)
+
+# Extract classification metrics
+accuracy <- cm$overall['Accuracy']
+sensitivity <- cm$byClass['Sensitivity']
+specificity <- cm$byClass['Specificity']
+precision <- cm$byClass['Pos Pred Value']
+recall <- cm$byClass['Sensitivity'] # Recall is the same as sensitivity
+F1 <- (2 * precision * recall) / (precision + recall) # Compute F1 score
+
+# Print metrics
+cat("Accuracy:", accuracy, "\n")
+cat("Sensitivity:", sensitivity, "\n")
+cat("Specificity:", specificity, "\n")
+cat("Precision:", precision, "\n")
+cat("Recall:", recall, "\n")
+cat("F1 Score:", F1, "\n")
+
+```
+
+
+
+
+
+
+
+
+
